@@ -1,0 +1,59 @@
+{
+  "repository": "https://github.com/Insta360-Research-Team/DiT360",
+  "commit": "3779fe7965473f6824994c663a0ae7a76bc7aafa",
+  "paper": "https://arxiv.org/html/2510.11712v1",
+  "files": {
+    "LICENSE": {
+      "sha256": "cd2322a5657b79bbdf5abf31b33dcbe79f265ae4d1535f08964ba7c155261859",
+      "matches_local_DiT360": true
+    },
+    "README.md": {
+      "sha256": "c7c01861b7868c117f3eb45f2249f5882d1c7a4f7f24a865b8545366423fc443",
+      "matches_local_DiT360": true
+    },
+    "src/cube_map.py": {
+      "sha256": "1e4df731d96c73c3d33dd4148133b14e56223a32a2ce9bbaa527f2232c263789",
+      "matches_local_DiT360": true
+    },
+    "src/data.py": {
+      "sha256": "45b090e081ccbc8c4cd07fddd8fb1d157f7d3fff6c4ccffc03d56010eb183bcd",
+      "matches_local_DiT360": true
+    },
+    "src/dit360.py": {
+      "sha256": "88564f88e47ace93d3832d422c600b93e98114cfd39f05fccca87a7bbfd7615b",
+      "matches_local_DiT360": true
+    },
+    "src/dit360_mix_staged.py": {
+      "sha256": "e4116e8d16087f34bbc22505a9bffffbecd8016d3fe115f4baf75cd4f191d3b4",
+      "matches_local_DiT360": true
+    },
+    "src/dynamic_dataset.py": {
+      "sha256": "054bacd0ec1b78e6a695796020b233f0f8655b7079d30b06afceccaa5e3e9868",
+      "matches_local_DiT360": true
+    },
+    "src/pipeline.py": {
+      "sha256": "9839a032fe75e331621915939524a986443667766381c1b3a2d18791c9f7d561",
+      "matches_local_DiT360": true
+    },
+    "src/yaw_rotate.py": {
+      "sha256": "ad88c70af7ea03da104d510776e97ff30a6e4100c4e6c54b9fdbc2fc8a4cac3a",
+      "matches_local_DiT360": true
+    },
+    "train.py": {
+      "sha256": "ff44c04796579c53088666903ad4b91446c5b6258581b3e1bf7cbed0a3980c2a",
+      "matches_local_DiT360": true
+    },
+    "train.sh": {
+      "sha256": "0fd11608646eda13d2226f9fbb72ed02feac80fc38702988e806153111a2536c",
+      "matches_local_DiT360": true
+    },
+    "train_mix_staged_lora_dynamic.py": {
+      "sha256": "45bd05bd5815afb17e43f13e8d8b838262bc0852c857d614e6df8721d9d2c44b",
+      "matches_local_DiT360": true
+    },
+    "train_mix_staged_lora_dynamic.sh": {
+      "sha256": "c28d9e07aec52a34d7be88516d48ba6c3ab5d50458a191eb43ba520f5fb30d84",
+      "matches_local_DiT360": true
+    }
+  }
+}
