@@ -30,6 +30,8 @@ def parse_args():
     p.add_argument("--offload", choices=("none", "model", "sequential"), default="model")
     p.add_argument("--vae-tiling", action="store_true")
     p.add_argument("--lora", type=Path, help="A checkpoint/final directory written by qwen_pano.train")
+    p.add_argument("--lora-scale", type=float, default=1.0,
+                   help="Inference adapter weight (default 1). Zero disables its contribution, not panorama padding.")
     p.add_argument("--padding-columns", type=int, help="Default: 0 for zero-shot, saved setting for LoRA")
     p.add_argument("--padding-mode", choices=("temporary", "persistent"), help="Default: saved checkpoint semantics")
     p.add_argument("--limit", type=int, help="First N samples; use a separate output for this pilot")
@@ -44,6 +46,10 @@ def main():
         raise ValueError("Invalid steps, sequence length or base seed")
     if not math.isfinite(args.true_cfg_scale) or args.true_cfg_scale <= 0:
         raise ValueError("true-cfg-scale must be positive and finite")
+    if not math.isfinite(args.lora_scale) or args.lora_scale < 0:
+        raise ValueError("lora-scale must be finite and nonnegative")
+    if not args.lora and args.lora_scale != 1.0:
+        raise ValueError("lora-scale requires --lora")
     rows = read_jsonl(args.prompts)
     check_ids(rows)
     if any(not isinstance(r.get("prompt"), str) or not r["prompt"].strip() for r in rows):
@@ -101,6 +107,7 @@ def main():
                padding_mode=padding_mode,
                dtype="bfloat16", device=args.device, offload=args.offload, vae_tiling=args.vae_tiling,
                lora_sha256=sha256(args.lora / "pytorch_lora_weights.safetensors") if args.lora else None,
+               lora_scale=args.lora_scale if args.lora else None,
                adapter_info=adapter_info, versions=versions(), source_hashes=source_hashes(),
                seed_derivation="sha256(utf8(base_seed:sample_id)) first8 big-endian modulo 2**63")
     out = args.output.resolve()
@@ -116,8 +123,12 @@ def main():
     generated = []
     try:
         if cfg.exists():
-            if json.loads(cfg.read_text()) != run:
+            from .resume_compat import compatible_config
+            previous = json.loads(cfg.read_text())
+            if not compatible_config(previous, run, inference=True):
                 raise ValueError("Run configuration changed; choose a NEW output directory")
+            # Preserve the original config and its hash for existing sidecars.
+            # Old runs without lora_scale mean weight 1.0 (or no adapter).
         elif any(p != lock for p in out.iterdir()):
             raise ValueError("Nonempty output without generation_config.json")
         else:
@@ -146,7 +157,10 @@ def main():
                     pipeline_class = QwenPanoPipeline if padding_mode == "persistent" else QwenImagePipeline
                     pipe = pipeline_class.from_pretrained(snapshot, torch_dtype=torch.bfloat16, local_files_only=True)
                     if args.lora:
-                        pipe.load_lora_weights(str(args.lora), weight_name="pytorch_lora_weights.safetensors")
+                        pipe.load_lora_weights(str(args.lora), weight_name="pytorch_lora_weights.safetensors",
+                                               adapter_name="pano")
+                        pipe.set_adapters("pano", adapter_weights=args.lora_scale)
+                        print(f"LoRA scale: {args.lora_scale}", flush=True)
                     if padding_mode == "persistent":
                         pipe.enable_pano(padding)
                     else:

@@ -78,8 +78,11 @@ def epoch_rows(panoramas, perspectives, epoch, seed, schedule):
 
 
 class ERPTrainingDataset(Dataset):
-    def __init__(self, rows, height, augment=False, profile="custom"):
+    def __init__(self, rows, height, augment=False, profile="custom", hf_dataset=None, seed=0):
         self.rows, self.height, self.augment, self.profile = rows, height, augment, profile
+        self.hf_dataset, self.seed = hf_dataset, seed
+        self.epoch = torch.zeros((), dtype=torch.int64).share_memory_()
+        self.worker_epoch = None
         from .cached_data import ArrowImages
         self.arrow_images = ArrowImages()
         if profile == "custom" and augment and any(not r.get("orientation_invariant", False) for r in rows if r["kind"] == "panorama"):
@@ -88,10 +91,29 @@ class ERPTrainingDataset(Dataset):
     def __len__(self):
         return len(self.rows)
 
+    def set_epoch(self, epoch):
+        self.epoch.fill_(epoch)
+
     def __getitem__(self, index):
+        # Persistent workers need the new epoch even though their dataset copy
+        # is not recreated. Seed at epoch boundaries for reproducible resumes.
+        worker = torch.utils.data.get_worker_info()
+        epoch = int(self.epoch.item())
+        if self.hf_dataset is not None and worker is not None and self.worker_epoch != epoch:
+            seed = self.seed + epoch * max(1, worker.num_workers) + worker.id
+            random.seed(seed)
+            np.random.seed(seed % (2 ** 32))
+            torch.manual_seed(seed)
+            self.worker_epoch = epoch
         row = self.rows[index]
         size = (2 * self.height, self.height)
-        source_image = self.arrow_images.open(row["image"]) if isinstance(row["image"], dict) else Image.open(row["image"])
+        if self.hf_dataset is not None:
+            example = self.hf_dataset[row["source_row_index"]]
+            if caption_text(example["caption"]) != row["caption"]:
+                raise ValueError("Hugging Face caption differs from the text-cache index")
+            source_image = example["image"]
+        else:
+            source_image = self.arrow_images.open(row["image"]) if isinstance(row["image"], dict) else Image.open(row["image"])
         with source_image as source:
             if source.width != 2 * source.height:
                 raise ValueError(f"Not an ERP (do not stretch perspective images): {row['image']}")
@@ -127,3 +149,25 @@ def collate(rows):
             "mask": torch.stack([r["mask"] for r in rows]),
             "captions": [r["caption"] for r in rows],
             "kinds": [r["kind"] for r in rows], "ids": [r["id"] for r in rows]}
+
+
+def load_polished_dataset(rows, revision):
+    """Use the upstream HF loader; the old index only verifies identity/cache keys."""
+    from datasets import load_dataset
+    dataset = load_dataset("Insta360-Research/Matterport3D_polished",
+                           revision=revision, split="train", keep_in_memory=False)
+    if not {"image", "caption"}.issubset(dataset.column_names):
+        raise ValueError("Official polished dataset must contain image and caption")
+    if len(dataset) != len(rows):
+        raise ValueError("Official full dataset and text-cache index have different row counts")
+    # In offline mode HF may fall back to the latest cached revision. Verify
+    # that it really selected the shards used by the existing identity index.
+    expected_files = {str(Path(row["image"]["arrow_file"]).resolve()) for row in rows}
+    actual_files = {str(Path(item["filename"]).resolve()) for item in dataset.cache_files}
+    if actual_files != expected_files:
+        raise ValueError("HF selected different cache shards; expected the indexed official dataset revision")
+    captions = dataset.select_columns(["caption"])
+    for index, (row, example) in enumerate(zip(rows, captions)):
+        if row.get("source_row_index") != index or caption_text(example["caption"]) != row["caption"]:
+            raise ValueError(f"Official dataset order/caption differs from index at row {index}")
+    return dataset

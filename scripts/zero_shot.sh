@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -p debug
-#SBATCH --nodelist=GPU4
+#SBATCH --nodelist=GPU3
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -36,5 +36,5 @@ python -u -m qwen_pano.inference \
   --model "$MODEL" \
   --prompts benchmark_assets/mp3d_stitched1092/prompts.jsonl \
   --output "$OUTPUT" --height 1024 --width 2048 \
-  --steps 50 --true-cfg-scale 4 --seed 0 --seed-mode per-id \
+  --steps 28 --true-cfg-scale 4 --seed 0 --seed-mode per-id \
   --prompt-mode verbatim --offload model "$@"

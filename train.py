@@ -102,9 +102,9 @@ def main():
                                           compute_loss_weighting_for_sd3)
     from peft import LoraConfig, get_peft_model_state_dict, set_peft_model_state_dict
     from safetensors.torch import load_file, save_file
-    from torch.utils.data import DataLoader
+    from torch.utils.data import DataLoader, RandomSampler
     from .circular import install_circular_padding
-    from .data import ERPTrainingDataset, collate, epoch_rows, training_rows
+    from .data import ERPTrainingDataset, collate, epoch_rows, training_rows, load_polished_dataset
     from .losses import panorama_loss
     from .profiles import lr_multiplier
 
@@ -133,6 +133,10 @@ def main():
         raise ValueError("Panorama and perspective manifests must have globally unique IDs")
     if args.official_full_training_only and len(panoramas) != provenance["training_rows"]:
         raise ValueError("Official-full row count differs from index provenance")
+    hf_dataset = None
+    if args.official_full_training_only:
+        with accelerator.main_process_first():
+            hf_dataset = load_polished_dataset(panoramas, provenance["dataset_revision"])
     with accelerator.main_process_first():
         snapshot = model_snapshot(args.model, args.revision, args.local_files_only)
     cache_config = json.loads((args.text_cache / "cache_config.json").read_text())
@@ -166,6 +170,8 @@ def main():
                   actual_panorama_count=len(panoramas), actual_perspective_count=len(perspectives),
                   paper_perspective_count_matches_40000=len(perspectives) == 40000,
                   global_effective_batch=args.batch_size * args.accumulation_steps * accelerator.num_processes,
+                  data_backend="huggingface_load_dataset" if hf_dataset is not None else "manifest",
+                  persistent_workers=args.schedule == "panorama" and args.workers > 0,
                   init_lora_sha256=sha256(args.init_lora / "adapter_resume.safetensors") if args.init_lora else None,
                   split_status="unverified" if any(not (r.get("scene_id") or r.get("scan_id")) for r in panoramas)
                   else "checked_against_supplied_heldout_houses")
@@ -173,8 +179,9 @@ def main():
         config["split_status"] = "official_full_training_only_no_independent_test_claim"
         config["dataset_index_provenance"] = provenance
     if args.resume:
+        from .resume_compat import compatible_config
         old = json.loads((args.resume / "training_config.json").read_text())
-        if old != config:
+        if not compatible_config(old, config):
             raise ValueError("Resume configuration changed. For a new experiment, use --init-lora and a new output")
         if not (args.resume / "COMPLETE.json").exists():
             raise ValueError("Checkpoint incomplete; use the previous completed epoch checkpoint")
@@ -182,8 +189,10 @@ def main():
     # Validate on every rank before rank zero mutates the shared directory.
     if args.output.exists() and any(args.output.iterdir()) and not args.resume:
         raise ValueError("Output must be empty for a new training run")
-    if config_path.exists() and json.loads(config_path.read_text()) != config:
-        raise ValueError("Output belongs to another experiment")
+    if config_path.exists():
+        from .resume_compat import compatible_config
+        if not compatible_config(json.loads(config_path.read_text()), config):
+            raise ValueError("Output belongs to another experiment")
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         args.output.mkdir(parents=True, exist_ok=True)
@@ -276,17 +285,34 @@ def main():
             embeddings[i, :n], masks[i, :n] = t["embeddings"], t["mask"]
         return embeddings.to(accelerator.device), masks.to(accelerator.device)
 
-    optimizer.zero_grad(set_to_none=True)
-    for epoch in range(start_epoch, args.epochs):
-        rows = epoch_rows(panoramas, perspectives, epoch, args.seed, args.schedule)
-        dataset = ERPTrainingDataset(rows, args.height, args.augment, profile=args.profile)
-        generator = torch.Generator().manual_seed(args.seed + epoch)
-        loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers,
-                            collate_fn=collate, pin_memory=True, generator=generator, drop_last=args.drop_last)
+    def make_loader(rows, persistent=False):
+        dataset = ERPTrainingDataset(rows, args.height, args.augment, profile=args.profile,
+                                     hf_dataset=hf_dataset, seed=args.seed + accelerator.process_index * 1000000)
+        generator = torch.Generator().manual_seed(args.seed)
+        # Keep shuffle RNG independent of worker startup: persistent workers
+        # start once, whereas resumed runs start fresh workers at a later epoch.
+        sampler = RandomSampler(dataset, generator=generator)
+        loader = DataLoader(dataset, batch_size=args.batch_size, sampler=sampler, num_workers=args.workers,
+                            collate_fn=collate, pin_memory=True,
+                            generator=torch.Generator().manual_seed(args.seed), drop_last=args.drop_last,
+                            persistent_workers=persistent and args.workers > 0)
         loader = accelerator.prepare_data_loader(loader)
-        loader.set_epoch(epoch)
         if not len(loader):
             raise ValueError("No training batches remain after distributed sharding/drop_last")
+        return dataset, generator, loader
+
+    # Pure panorama training constructs/prepares exactly one loader for the run.
+    if args.schedule == "panorama":
+        rows = panoramas
+        dataset, generator, loader = make_loader(rows, persistent=True)
+    optimizer.zero_grad(set_to_none=True)
+    for epoch in range(start_epoch, args.epochs):
+        if args.schedule != "panorama":
+            rows = epoch_rows(panoramas, perspectives, epoch, args.seed, args.schedule)
+            dataset, generator, loader = make_loader(rows)
+        dataset.set_epoch(epoch)
+        generator.manual_seed(args.seed + epoch)
+        loader.set_epoch(epoch)
         accelerator.print(f"Epoch {epoch + 1}/{args.epochs}: panorama={len(panoramas)}, perspective={len(rows) - len(panoramas)}")
         for batch in loader:
             with accelerator.accumulate(transformer):

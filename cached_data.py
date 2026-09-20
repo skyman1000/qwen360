@@ -149,27 +149,26 @@ def build_index(args):
 
 
 class ArrowImages:
-    """Per-worker memory maps: only the selected image bytes are materialized."""
-    def __init__(self):
-        self.pid, self.files = None, {}
+    """Read one image without retaining every visited shard in each worker.
 
-    def __getstate__(self):
-        return {"pid": None, "files": {}}
+    Memory maps share file-backed pages; they are not full dataset copies.
+    Closing each reader bounds retained mappings, not total job/page-cache RAM.
+    """
 
     def open(self, pointer):
         import io
         import pyarrow as pa
         from PIL import Image
-        if self.pid != os.getpid():
-            self.pid, self.files = os.getpid(), {}
-        path = pointer["arrow_file"]
-        if path not in self.files:
-            source = pa.memory_map(path, "r")
-            batches = list(pa.ipc.open_stream(source))
-            self.files[path] = source, batches
-        batch = self.files[path][1][pointer["batch_index"]]
-        images = batch.column(batch.schema.get_field_index("image"))
-        encoded = images[pointer["row_index"]].as_py()["bytes"]
+        with pa.memory_map(pointer["arrow_file"], "r") as source:
+            with pa.ipc.open_stream(source) as reader:
+                for index, batch in enumerate(reader):
+                    if index == pointer["batch_index"]:
+                        images = batch.column(batch.schema.get_field_index("image"))
+                        # Copy the selected encoded image before closing its map.
+                        encoded = images[pointer["row_index"]].as_py()["bytes"]
+                        break
+                else:
+                    raise IndexError(f"Arrow batch not found: {pointer['batch_index']}")
         return Image.open(io.BytesIO(encoded))
 
 

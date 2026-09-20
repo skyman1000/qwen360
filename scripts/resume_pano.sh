@@ -7,7 +7,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --qos=normal
 #SBATCH --time=72:00:00
-#SBATCH --mem=70G
+#SBATCH --mem=128G
 #SBATCH --job-name=qwen-resume
 #SBATCH --output=qwen-resume_%j.log
 
