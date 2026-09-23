@@ -2,6 +2,8 @@
 __pycache__/
 outputs/
 data/
+!caupano/data/
+!caupano/data/**
 cache/
 *.pyc
 
